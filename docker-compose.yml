@@ -1,0 +1,29 @@
+services:
+  dogfeed:
+    build: ./services/loop
+    image: ghcr.io/peterlodri-sec/dogfeedos-loop:latest
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - data:/data
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import sqlite3; sqlite3.connect('/data/dogfeed.db').execute('SELECT 1')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  ui:
+    build: ./services/ui
+    image: ghcr.io/peterlodri-sec/dogfeedos-ui:latest
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${UI_PORT:-8080}:8080"
+    volumes:
+      - data:/data
+    depends_on:
+      dogfeed:
+        condition: service_healthy
+
+volumes:
+  data:
