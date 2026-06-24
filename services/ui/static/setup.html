@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dogfeedOS — setup</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="container" style="max-width:520px">
+  <header class="site-header">
+    <h1>dogfeedOS</h1>
+    <a href="/" class="btn" style="margin-left:auto">← dashboard</a>
+  </header>
+  <div style="font-size:.8rem;color:var(--dim);margin-bottom:1.5rem">Step <span id="step-num">1</span> of 4</div>
+
+  <div class="step active" id="step-1">
+    <h2>API Keys</h2>
+    <label>OpenRouter API key <span style="color:var(--red)">*</span></label>
+    <input type="password" id="or-key" placeholder="sk-or-v1-...">
+    <div class="hint" id="or-status"></div>
+    <label>HuggingFace token <span style="color:var(--dim)">(optional)</span></label>
+    <input type="password" id="hf-token" placeholder="hf_...">
+    <div class="hint">Leave blank to disable HF push.</div>
+    <div style="margin-top:1.5rem;display:flex;gap:.75rem">
+      <button class="btn primary" onclick="testKeys()">test keys</button>
+      <button class="btn" id="next-1" onclick="next(2)" style="display:none">next →</button>
+    </div>
+  </div>
+
+  <div class="step" id="step-2">
+    <h2>Your Loop</h2>
+    <label>Topics <span style="color:var(--dim)">(one per line, leave blank for self-steering)</span></label>
+    <textarea id="topics" rows="4" placeholder="machine learning&#10;compilers&#10;distributed systems"></textarea>
+    <label>HuggingFace dataset repo <span style="color:var(--dim)">(optional)</span></label>
+    <input type="text" id="hf-repo" placeholder="username/my-dogfeed-dataset">
+    <div style="margin-top:1.5rem;display:flex;gap:.75rem">
+      <button class="btn" onclick="next(1)">← back</button>
+      <button class="btn primary" onclick="next(3)">next →</button>
+    </div>
+  </div>
+
+  <div class="step" id="step-3">
+    <h2>Budget</h2>
+    <label>Daily call limit <span style="color:var(--dim)">(0 = unlimited)</span></label>
+    <input type="number" id="call-limit" value="200" min="0">
+    <label>Daily token limit <span style="color:var(--dim)">(0 = unlimited)</span></label>
+    <input type="number" id="token-limit" value="50000" min="0">
+    <label>Loop interval (seconds)</label>
+    <input type="number" id="interval" value="30" min="5">
+    <label>Push to HF every N records <span style="color:var(--dim)">(0 = manual only)</span></label>
+    <input type="number" id="push-every" value="50" min="0">
+    <div style="margin-top:1.5rem;display:flex;gap:.75rem">
+      <button class="btn" onclick="next(2)">← back</button>
+      <button class="btn primary" onclick="saveAll()">save &amp; start →</button>
+    </div>
+  </div>
+
+  <div class="step" id="step-4">
+    <h2>Done</h2>
+    <p style="color:var(--green)">✓ Configuration saved. Loop starting...</p>
+    <p style="color:var(--dim);font-size:.85rem">Redirecting in <span id="countdown">3</span>s</p>
+    <a href="/" class="btn primary">go to dashboard →</a>
+  </div>
+</div>
+<script>
+let cur=1;
+function next(n){document.getElementById(`step-${cur}`).classList.remove('active');document.getElementById(`step-${n}`).classList.add('active');cur=n;document.getElementById('step-num').textContent=n;}
+async function post(k,v){await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k,value:v})});}
+async function testKeys(){
+  const key=document.getElementById('or-key').value.trim();
+  if(!key){document.getElementById('or-status').textContent='⚠ required';return;}
+  document.getElementById('or-status').textContent='testing...';
+  try{
+    const r=await fetch('https://openrouter.ai/api/v1/models',{headers:{'Authorization':`Bearer ${key}`}});
+    if(r.ok){document.getElementById('or-status').className='hint valid';document.getElementById('or-status').textContent='✓ valid';document.getElementById('next-1').style.display='inline-block';}
+    else{document.getElementById('or-status').className='hint invalid';document.getElementById('or-status').textContent='✗ invalid key';}
+  }catch(e){document.getElementById('or-status').className='hint invalid';document.getElementById('or-status').textContent='✗ could not reach OpenRouter';}
+}
+async function saveAll(){
+  const topics=document.getElementById('topics').value.split('\n').map(t=>t.trim()).filter(Boolean).join(',');
+  await Promise.all([
+    post('loop_topics',topics),
+    post('hf_repo',document.getElementById('hf-repo').value.trim()),
+    post('call_limit',document.getElementById('call-limit').value),
+    post('token_limit',document.getElementById('token-limit').value),
+    post('loop_interval_sec',document.getElementById('interval').value),
+    post('hf_push_every',document.getElementById('push-every').value),
+    post('paused','0'),
+  ]);
+  next(4);
+  let n=3;
+  const t=setInterval(()=>{document.getElementById('countdown').textContent=--n;if(n<=0){clearInterval(t);location.href='/';}},1000);
+}
+</script>
+</body>
+</html>

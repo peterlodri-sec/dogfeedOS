@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dogfeedOS</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="container">
+  <header class="site-header">
+    <div>
+      <h1>dogfeedOS</h1>
+      <div class="tagline">self-improving data loop</div>
+    </div>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:.75rem">
+      <span class="dot" id="status-dot"></span>
+      <span id="status-text" style="font-size:.85rem;color:var(--dim)">loading...</span>
+      <button class="btn" id="pause-btn" onclick="togglePause()">pause</button>
+      <a href="/setup" class="btn">settings</a>
+    </div>
+  </header>
+
+  <div class="budget">
+    <div class="budget-row">
+      <div class="budget-label"><span>calls</span><span id="calls-label">—</span></div>
+      <div class="bar-track"><div class="bar-fill" id="calls-bar" style="width:0%"></div></div>
+    </div>
+    <div class="budget-row">
+      <div class="budget-label"><span>tokens</span><span id="tokens-label">—</span></div>
+      <div class="bar-track"><div class="bar-fill" id="tokens-bar" style="width:0%"></div></div>
+    </div>
+    <div style="font-size:.75rem;color:var(--dim);margin-top:.25rem" id="reset-label"></div>
+  </div>
+
+  <div class="stats-bar">
+    <div>records <span id="total-records">—</span></div>
+    <div>last push <span id="last-push">—</span></div>
+    <button class="btn" style="margin-left:auto" onclick="manualPush()">push now</button>
+  </div>
+
+  <h2 class="section">live feed</h2>
+  <div id="feed"></div>
+  <div style="text-align:center;margin-top:1rem">
+    <button class="btn" id="load-more" onclick="loadMore()" style="display:none">load more</button>
+  </div>
+</div>
+<script>
+let paused = false, offset = 0;
+const PAGE = 10;
+function barClass(p) { return p>=95?'red':p>=80?'amber':'green'; }
+function fmtSecs(s) { const h=Math.floor(s/3600),m=Math.floor((s%3600)/60); return `${h}h ${m}m`; }
+async function refreshStatus() {
+  try {
+    const d = await fetch('/api/status').then(r=>r.json());
+    const b = d.budget;
+    paused = d.loop_status==='paused';
+    document.getElementById('status-dot').className='dot '+(paused?'paused':'running');
+    document.getElementById('status-text').textContent=d.loop_status;
+    document.getElementById('pause-btn').textContent=paused?'resume':'pause';
+    const cp=b.call_pct,tp=b.token_pct;
+    document.getElementById('calls-bar').style.width=Math.min(cp,100)+'%';
+    document.getElementById('calls-bar').className='bar-fill '+barClass(cp);
+    document.getElementById('calls-label').textContent=`${b.calls_used} / ${b.call_limit} (${cp}%)`;
+    document.getElementById('tokens-bar').style.width=Math.min(tp,100)+'%';
+    document.getElementById('tokens-bar').className='bar-fill '+barClass(tp);
+    document.getElementById('tokens-label').textContent=`${b.tokens_used} / ${b.token_limit} (${tp}%)`;
+    document.getElementById('reset-label').textContent=`resets in ${fmtSecs(b.secs_until_reset)}`;
+    document.getElementById('total-records').textContent=d.total_records;
+    document.getElementById('last-push').textContent=d.last_pushed_at?d.last_pushed_at.slice(0,16)+'Z':'never';
+  } catch(e) { document.getElementById('status-text').textContent='error'; }
+}
+async function refreshFeed() {
+  try {
+    const d=await fetch(`/api/records?limit=${PAGE}&offset=0`).then(r=>r.json());
+    offset=d.records.length;
+    renderRecords(d.records,true);
+    document.getElementById('load-more').style.display=d.total>PAGE?'inline-block':'none';
+  } catch(e) {}
+}
+function renderRecords(records,replace) {
+  const feed=document.getElementById('feed');
+  const html=records.map(r=>`<div class="card">
+    <div class="meta">${r.timestamp.slice(0,16)}Z · ${(r.q_model||'').split('/')[1]||''} · ${r.topic||''}</div>
+    <div class="question">${esc(r.question)}</div>
+    <div class="answer">${esc(r.answer.slice(0,300))}${r.answer.length>300?'...':''}</div>
+  </div>`).join('');
+  if(replace){feed.innerHTML=html;}else{feed.innerHTML+=html;}
+}
+async function loadMore() {
+  const d=await fetch(`/api/records?limit=${PAGE}&offset=${offset}`).then(r=>r.json());
+  offset+=d.records.length;
+  renderRecords(d.records,false);
+  if(offset>=d.total) document.getElementById('load-more').style.display='none';
+}
+async function togglePause() { await fetch(paused?'/api/resume':'/api/pause',{method:'POST'}); refreshStatus(); }
+async function manualPush() { const r=await fetch('/api/push',{method:'POST'}).then(r=>r.json()); alert(`Pushed ${r.pushed} records.`); refreshStatus(); }
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+refreshStatus(); refreshFeed();
+setInterval(refreshStatus,5000); setInterval(refreshFeed,10000);
+</script>
+</body>
+</html>
