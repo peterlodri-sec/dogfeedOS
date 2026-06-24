@@ -9,6 +9,9 @@ import requests
 import db as _db
 import budget as _budget
 
+_HF_PREFIX = 'hf://'
+_HF_API_BASE = 'https://api-inference.huggingface.co/models'
+
 _PII = [
     re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'),
     re.compile(r'\b(\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b'),
@@ -51,25 +54,57 @@ def pick_topic(topics_env: str, conn: sqlite3.Connection) -> str:
     return random.choice(_FALLBACK_TOPICS)
 
 
-def probe_models(key: str, models: list[str]) -> list[str]:
+def probe_models(key: str, models: list[str], hf_token: str = '') -> list[str]:
+    """Probe all models (OpenRouter + HF) and return working ones."""
     working = []
     for model in models:
-        try:
-            r = requests.post(
-                'https://openrouter.ai/api/v1/chat/completions',
-                headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'},
-                json={'model': model, 'messages': [{'role': 'user', 'content': 'ping'}], 'max_tokens': 5},
-                timeout=20,
-            )
-            r.raise_for_status()
-            if r.json().get('choices'):
+        if model.startswith(_HF_PREFIX):
+            if _probe_hf(model.removeprefix(_HF_PREFIX), hf_token):
                 working.append(model)
-        except Exception:
-            pass
+        else:
+            if _probe_openrouter(model, key):
+                working.append(model)
     return working
 
 
-def ask(prompt: str, model: str, key: str, max_tokens: int = 512) -> str | None:
+def _probe_openrouter(model: str, key: str) -> bool:
+    try:
+        r = requests.post(
+            'https://openrouter.ai/api/v1/chat/completions',
+            headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'},
+            json={'model': model, 'messages': [{'role': 'user', 'content': 'ping'}], 'max_tokens': 5},
+            timeout=20,
+        )
+        r.raise_for_status()
+        return bool(r.json().get('choices'))
+    except Exception:
+        return False
+
+
+def _probe_hf(model_id: str, token: str) -> bool:
+    if not token:
+        return False
+    try:
+        r = requests.post(
+            f'{_HF_API_BASE}/{model_id}/v1/chat/completions',
+            headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
+            json={'model': model_id, 'messages': [{'role': 'user', 'content': 'ping'}], 'max_tokens': 5},
+            timeout=20,
+        )
+        r.raise_for_status()
+        return bool(r.json().get('choices'))
+    except Exception:
+        return False
+
+
+def ask(prompt: str, model: str, key: str, max_tokens: int = 512, hf_token: str = '') -> str | None:
+    """Route to HF or OpenRouter based on model prefix."""
+    if model.startswith(_HF_PREFIX):
+        return _ask_hf(prompt, model.removeprefix(_HF_PREFIX), hf_token, max_tokens)
+    return _ask_openrouter(prompt, model, key, max_tokens)
+
+
+def _ask_openrouter(prompt: str, model: str, key: str, max_tokens: int) -> str | None:
     try:
         r = requests.post(
             'https://openrouter.ai/api/v1/chat/completions',
@@ -95,6 +130,30 @@ def ask(prompt: str, model: str, key: str, max_tokens: int = 512) -> str | None:
         return None
 
 
+def _ask_hf(prompt: str, model_id: str, token: str, max_tokens: int) -> str | None:
+    if not token:
+        return None
+    try:
+        r = requests.post(
+            f'{_HF_API_BASE}/{model_id}/v1/chat/completions',
+            headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
+            json={'model': model_id, 'messages': [{'role': 'user', 'content': prompt}],
+                  'max_tokens': max_tokens, 'temperature': 0.7},
+            timeout=60,
+        )
+        r.raise_for_status()
+        choices = r.json().get('choices')
+        if not choices:
+            return None
+        return choices[0]['message']['content'].strip()
+    except requests.HTTPError as e:
+        if e.response.status_code == 429:
+            time.sleep(15)
+        return None
+    except Exception:
+        return None
+
+
 def one_iteration(conn: sqlite3.Connection, state: dict) -> dict | None:
     if state.get('paused'):
         return None
@@ -105,7 +164,8 @@ def one_iteration(conn: sqlite3.Connection, state: dict) -> dict | None:
     if not models:
         _db.log_event(conn, 'ERROR', 'no working models')
         return None
-    key        = state['key']
+    key       = state['key']
+    hf_token  = state.get('hf_token', '')
     topics_env = state.get('topics_env', '')
     idx        = state['model_idx']
     q_model = models[idx % len(models)]
@@ -116,7 +176,7 @@ def one_iteration(conn: sqlite3.Connection, state: dict) -> dict | None:
         f'Target a specific mechanism, concept, or tradeoff — not a meta-question.\n'
         f'Just the question, nothing else.'
     )
-    question = ask(q_prompt, q_model, key, max_tokens=128)
+    question = ask(q_prompt, q_model, key, max_tokens=128, hf_token=hf_token)
     if not question:
         return None
     a_prompt = (
@@ -124,7 +184,7 @@ def one_iteration(conn: sqlite3.Connection, state: dict) -> dict | None:
         f'If uncertain about anything, say so explicitly.\n\n'
         f'Question: {question}'
     )
-    answer = ask(a_prompt, a_model, key, max_tokens=600)
+    answer = ask(a_prompt, a_model, key, max_tokens=600, hf_token=hf_token)
     if not answer:
         return None
     question = pii_scrub(question)

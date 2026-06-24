@@ -9,16 +9,25 @@ import loop as _loop
 import ralph as _ralph
 import publisher as _publisher
 
-DB_PATH           = os.environ.get('DB_PATH', '/data/dogfeed.db')
-OPENROUTER_KEY    = os.environ['OPENROUTER_KEY']
-OPENROUTER_MODELS = os.environ.get('OPENROUTER_MODELS', 'liquid/lfm-2.5-1.2b-instruct:free')
-LOOP_TOPICS       = os.environ.get('LOOP_TOPICS', '')
-LOOP_INTERVAL     = int(os.environ.get('LOOP_INTERVAL_SEC', '30'))
-DAILY_CALL_LIMIT  = int(os.environ.get('DAILY_CALL_LIMIT', '200'))
-DAILY_TOKEN_LIMIT = int(os.environ.get('DAILY_TOKEN_LIMIT', '50000'))
-HF_TOKEN          = os.environ.get('HF_TOKEN', '')
-HF_REPO           = os.environ.get('HF_REPO', '')
-HF_PUSH_EVERY     = int(os.environ.get('HF_PUSH_EVERY', '50'))
+DB_PATH             = os.environ.get('DB_PATH', '/data/dogfeed.db')
+OPENROUTER_KEY      = os.environ['OPENROUTER_KEY']
+OPENROUTER_MODELS   = os.environ.get('OPENROUTER_MODELS', 'liquid/lfm-2.5-1.2b-instruct:free')
+# HF Pro inference — set HF_INFERENCE_TOKEN to enable round-robin with HF models.
+# Models are prefixed with hf:// e.g. hf://meta-llama/Meta-Llama-3.1-8B-Instruct
+# Default HF_MODELS includes high-quality Pro-accessible models.
+HF_INFERENCE_TOKEN  = os.environ.get('HF_INFERENCE_TOKEN', '')
+HF_MODELS           = os.environ.get('HF_MODELS',
+    'hf://meta-llama/Meta-Llama-3.1-8B-Instruct,'
+    'hf://Qwen/Qwen2.5-72B-Instruct,'
+    'hf://mistralai/Mistral-7B-Instruct-v0.3'
+)
+LOOP_TOPICS         = os.environ.get('LOOP_TOPICS', '')
+LOOP_INTERVAL       = int(os.environ.get('LOOP_INTERVAL_SEC', '30'))
+DAILY_CALL_LIMIT    = int(os.environ.get('DAILY_CALL_LIMIT', '200'))
+DAILY_TOKEN_LIMIT   = int(os.environ.get('DAILY_TOKEN_LIMIT', '50000'))
+HF_TOKEN            = os.environ.get('HF_TOKEN', '')
+HF_REPO             = os.environ.get('HF_REPO', '')
+HF_PUSH_EVERY       = int(os.environ.get('HF_PUSH_EVERY', '50'))
 
 _running = True
 
@@ -42,17 +51,21 @@ def main() -> None:
 
     _db.log_event(conn, 'INFO', 'dogfeedOS starting')
 
-    candidate_models = [m.strip() for m in OPENROUTER_MODELS.split(',') if m.strip()]
-    print(f'Probing {len(candidate_models)} models...', flush=True)
-    working_models = _loop.probe_models(OPENROUTER_KEY, candidate_models)
+    or_candidates = [m.strip() for m in OPENROUTER_MODELS.split(',') if m.strip()]
+    hf_candidates = [m.strip() for m in HF_MODELS.split(',') if m.strip()] if HF_INFERENCE_TOKEN else []
+    candidate_models = or_candidates + hf_candidates
+    print(f'Probing {len(or_candidates)} OpenRouter + {len(hf_candidates)} HF models...', flush=True)
+    working_models = _loop.probe_models(OPENROUTER_KEY, candidate_models, hf_token=HF_INFERENCE_TOKEN)
     if not working_models:
-        print('ERROR: no working models. Check OPENROUTER_KEY and OPENROUTER_MODELS.', file=sys.stderr)
+        print('ERROR: no working models. Check OPENROUTER_KEY / HF_INFERENCE_TOKEN.', file=sys.stderr)
         sys.exit(1)
-    print(f'Working: {[m.split("/")[1] for m in working_models]}', flush=True)
+    short = [m.split('/')[-1] for m in working_models]
+    print(f'Working ({len(working_models)}): {short}', flush=True)
     _db.log_event(conn, 'INFO', f'models: {working_models}')
 
     state = {
         'key':        OPENROUTER_KEY,
+        'hf_token':   HF_INFERENCE_TOKEN,
         'models':     working_models,
         'model_idx':  0,
         'iteration':  _db.total_records(conn),
